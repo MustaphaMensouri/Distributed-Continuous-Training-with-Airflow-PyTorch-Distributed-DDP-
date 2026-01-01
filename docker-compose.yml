@@ -1,0 +1,235 @@
+version: '3.8'
+
+x-airflow-common:
+  &airflow-common
+  build: .                                   
+  environment:
+    - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+    - MLFLOW_TRACKING_URI=http://mlflow-server:5000
+    # Use variables for the connection string
+    - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres/${POSTGRES_DB}
+    - AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=true
+    - AIRFLOW__CORE__LOAD_EXAMPLES=false
+    # Security Keys
+    - AIRFLOW__CORE__FERNET_KEY=${AIRFLOW_FERNET_KEY}
+    - AIRFLOW__WEBSERVER__SECRET_KEY=${AIRFLOW_SECRET_KEY}
+    # Azure Credentials
+    - AZURE_CLIENT_ID=${AZURE_CLIENT_ID}
+    - AZURE_CLIENT_SECRET=${AZURE_CLIENT_SECRET}
+    - AZURE_TENANT_ID=${AZURE_TENANT_ID}
+    - AZURE_SUBSCRIPTION_ID=${AZURE_SUBSCRIPTION_ID}
+    - AZURE_RESOURCE_GROUP=${AZURE_RESOURCE_GROUP}
+    - AZURE_WORKSPACE=${AZURE_RESOURCE_GROUP}
+    - ENDPOINT_NAME=${ENDPOINT_NAME}
+    - DEPLOY_DIR=${DEPLOY_DIR}
+    - DEPLOYMENT_NAME=${DEPLOYMENT_NAME}
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./logs:/opt/airflow/logs
+    - ./plugins:/opt/airflow/plugins
+    - ./jobs:/opt/airflow/jobs
+    - ./data:/opt/airflow/data
+    - /var/run/docker.sock:/var/run/docker.sock
+    - ./mlflow_artifacts:/mlflow/artifacts
+  user: "${AIRFLOW_UID:-50000}:0"
+  depends_on:
+    postgres:
+      condition: service_healthy
+
+services:
+  # --- DATABASE ---
+  postgres:
+    image: postgres:13
+    container_name: airflow-postgres
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "${POSTGRES_USER}"]
+      interval: 10s
+      retries: 5
+    networks:
+      - data-network
+
+  # --- SPARK CLUSTER ---
+  spark-master:
+    image: apache/spark:3.4.1
+    container_name: spark-master
+    user: root
+    environment:
+      - SPARK_MODE=master
+      - SPARK_RPC_AUTHENTICATION_ENABLED=no
+      - SPARK_MASTER_PORT=7077
+      - SPARK_MASTER_WEBUI_PORT=8080
+    ports:
+      - '8081:8080'
+      - '7077:7077'
+    volumes:
+      - ./jobs:/opt/spark/jobs
+      - ./data:/opt/spark/data
+    networks:
+      - data-network
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  spark-worker-1:
+    image: apache/spark:3.4.1
+    container_name: spark-worker-1
+    user: root
+    environment:
+      - SPARK_MODE=worker
+      - SPARK_WORKER_CORES=1
+      - SPARK_WORKER_MEMORY=1g
+    volumes:
+      - ./data:/opt/spark/data
+    depends_on:
+      spark-master:
+        condition: service_healthy
+    networks:
+      - data-network
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
+
+  spark-worker-2:
+    image: apache/spark:3.4.1
+    container_name: spark-worker-2
+    user: root
+    environment:
+      - SPARK_MODE=worker
+      - SPARK_WORKER_CORES=1
+      - SPARK_WORKER_MEMORY=1g
+    volumes:
+      - ./data:/opt/spark/data
+    depends_on:
+      spark-master:
+        condition: service_healthy
+    networks:
+      - data-network
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
+
+  # --- PYTORCH DDP NODES ---
+  pytorch-master:
+    build:
+      context: .
+      dockerfile: Dockerfile.pytorch
+    container_name: pytorch-master
+    environment:
+      - MASTER_ADDR=pytorch-master
+      - MASTER_PORT=29500
+      - NODE_RANK=0
+      - WORLD_SIZE=2
+      - MLFLOW_TRACKING_URI=http://mlflow-server:5000
+    volumes:
+      - ./jobs:/workspace/jobs
+      - ./data:/workspace/data
+      - ./mlflow_artifacts:/mlflow/artifacts
+    networks:
+      - data-network
+    command: tail -f /dev/null
+
+  pytorch-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.pytorch
+    container_name: pytorch-worker
+    environment:
+      - MASTER_ADDR=pytorch-master
+      - MASTER_PORT=29500
+      - NODE_RANK=1
+      - WORLD_SIZE=2
+      - MLFLOW_TRACKING_URI=http://mlflow-server:5000
+    volumes:
+      - ./jobs:/workspace/jobs
+      - ./data:/workspace/data
+      - ./mlflow_artifacts:/mlflow/artifacts
+    networks:
+      - data-network
+    command: tail -f /dev/null
+  
+  # --- MLFLOW ---
+  mlflow-db:
+    image: postgres:13
+    container_name: mlflow-db
+    environment:
+      - POSTGRES_USER=${MLFLOW_DB_USER}
+      - POSTGRES_PASSWORD=${MLFLOW_DB_PASSWORD}
+      - POSTGRES_DB=${MLFLOW_DB_NAME}
+    volumes:
+      - ./mlflow_db_data:/var/lib/postgresql/data
+    networks:
+      - data-network
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "${MLFLOW_DB_USER}"]
+      interval: 10s
+      retries: 5
+
+  mlflow-server:
+    image: ghcr.io/mlflow/mlflow:v2.9.2
+    container_name: mlflow-server
+    depends_on:
+      mlflow-db:
+        condition: service_healthy
+    ports:
+      - "5000:5000"
+    environment:
+      - MLFLOW_BACKEND_STORE_URI=postgresql://${MLFLOW_DB_USER}:${MLFLOW_DB_PASSWORD}@mlflow-db:5432/${MLFLOW_DB_NAME}
+    volumes:
+      - ./mlflow_artifacts:/mlflow/artifacts
+    networks:
+      - data-network
+    command: >
+      /bin/sh -c "pip install psycopg2-binary && mlflow server \
+      --backend-store-uri postgresql://${MLFLOW_DB_USER}:${MLFLOW_DB_PASSWORD}@mlflow-db:5432/${MLFLOW_DB_NAME} \
+      --host 0.0.0.0 \
+      --default-artifact-root /mlflow/artifacts"
+
+  # --- AIRFLOW ---
+  airflow-init:
+    build: .
+    container_name: airflow-init
+    environment:
+      # Pass DB credentials here too
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres/${POSTGRES_DB}
+      - _AIRFLOW_DB_MIGRATE=true
+      - _AIRFLOW_WWW_USER_CREATE=true
+      - _AIRFLOW_WWW_USER_USERNAME=${AIRFLOW_ADMIN_USER}
+      - _AIRFLOW_WWW_USER_PASSWORD=${AIRFLOW_ADMIN_PASSWORD}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - data-network
+    user: "${AIRFLOW_UID:-50000}:0"
+    command: version
+
+  airflow-webserver:
+    <<: *airflow-common
+    container_name: airflow-webserver
+    command: webserver
+    ports:
+      - "8080:8080"
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    networks:
+      - data-network
+
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: airflow-scheduler
+    command: scheduler
+    user: root
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    networks: 
+      - data-network
+
+networks:
+  data-network:
+    name: data-network
+    driver: bridge

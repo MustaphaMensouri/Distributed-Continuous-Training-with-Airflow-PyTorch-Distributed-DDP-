@@ -1,0 +1,39 @@
+# --- Python Specific ---
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+
+# --- Virtual Environments ---
+# Common names for virtual envs
+venv/
+.venv/
+env/
+.env
+
+# --- Jupyter Notebooks ---
+.ipynb_checkpoints
+
+# --- IDE & Editor Settings ---
+# VS Code
+.vscode/
+# PyCharm / IntelliJ
+.idea/
+
+# --- OS Generated Files ---
+# Mac
+.DS_Store
+# Windows
+Thumbs.db
+
+# --- Project Specific (Based on your status earlier) ---
+mlflow_db_data/
+mlflow_artifacts/
+logs/
+data/
