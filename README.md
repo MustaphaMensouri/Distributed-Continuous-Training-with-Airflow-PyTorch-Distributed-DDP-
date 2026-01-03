@@ -1,8 +1,4 @@
 # Distributed Continuous Training with Airflow + PyTorch DDP
-
-**University Cadi Ayyad | Master in Artificial Intelligence**  
-*A Hands-on Tutorial: Building a Distributed Continuous Training Pipeline with Airflow, Spark, and PyTorch Distributed (DDP).*
-
 ---
 
 ## Overview
