@@ -73,6 +73,23 @@ mkdir -p data/raw data/processed data/registry
 Create a `.env` file in the root directory of the project. Docker Compose will automatically read this file to authenticate with Azure.
 
 ```bash
+AIRFLOW_UID=1000
+# --- Airflow Security ---
+AIRFLOW_FERNET_KEY=46BKJoQYlPPOexq0OhDZnIlNepKFf87WFwLbfzqDDho=
+AIRFLOW_SECRET_KEY=fix_my_logs_please_12345
+AIRFLOW_ADMIN_USER=admin
+AIRFLOW_ADMIN_PASSWORD=admin
+
+# --- Database Credentials (Airflow) ---
+POSTGRES_USER=airflow
+POSTGRES_PASSWORD=airflow
+POSTGRES_DB=airflow
+
+# --- Database Credentials (MLflow) ---
+MLFLOW_DB_USER=mlflow
+MLFLOW_DB_PASSWORD=mlflow
+MLFLOW_DB_NAME=mlflow
+
 # Azure Authentication
 AZURE_CLIENT_ID=your-client-id
 AZURE_CLIENT_SECRET=your-client-secret
